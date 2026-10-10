@@ -64,11 +64,21 @@ class ReconcileService:
         date_to: date | None,
         days_back: int,
     ) -> dict[str, Any]:
-        from app.database import async_session_factory
+        from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        async with async_session_factory() as db:
-            self._db = db
-            return await self._reconcile_all_stocks(stock_codes, date_from, date_to, days_back)
+        from app.database import create_run_engine
+
+        # A dedicated NullPool engine: pooled connections carry no loop
+        # affinity, so drawing from the global engine on this fresh loop can
+        # hand back an asyncmy/asyncpg connection created on another loop.
+        engine = create_run_engine(self._settings)
+        try:
+            factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with factory() as db:
+                self._db = db
+                return await self._reconcile_all_stocks(stock_codes, date_from, date_to, days_back)
+        finally:
+            await engine.dispose()
 
     async def _reconcile_all_stocks(
         self,

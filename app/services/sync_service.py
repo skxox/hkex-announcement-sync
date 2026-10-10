@@ -95,12 +95,22 @@ class SyncService:
         date_from: date | None = None,
         date_to: date | None = None,
     ) -> dict[str, Any]:
-        """Async pipeline driver: own loop, own session, one loop per run."""
-        from app.database import async_session_factory
+        """Async pipeline driver: own loop, own engine/session, one loop per run."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        async with async_session_factory() as db:
-            self._db = db
-            return await self._run_all_stocks(task_state, mode, date_from, date_to)
+        from app.database import create_run_engine
+
+        # A dedicated NullPool engine: pooled connections carry no loop
+        # affinity, so drawing from the global engine on this fresh loop can
+        # hand back an asyncmy/asyncpg connection created on another loop.
+        engine = create_run_engine(self._settings)
+        try:
+            factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with factory() as db:
+                self._db = db
+                return await self._run_all_stocks(task_state, mode, date_from, date_to)
+        finally:
+            await engine.dispose()
 
     async def _run_all_stocks(
         self,

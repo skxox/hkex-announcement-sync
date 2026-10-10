@@ -7,13 +7,19 @@ Database engine, session factory, and dependency injection helpers.
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 
-def _create_engine():
-    settings = get_settings()
+def _create_engine(settings: Settings | None = None, poolclass=None) -> AsyncEngine:
+    settings = settings or get_settings()
+
+    kwargs: dict = {"echo": False}
+    if poolclass is not None:
+        kwargs["poolclass"] = poolclass
+    elif not settings.is_sqlite:
+        kwargs.update(pool_size=10, max_overflow=20, pool_pre_ping=True)
 
     # SQLite has limited support for concurrent connections
     if settings.is_sqlite:
@@ -23,18 +29,25 @@ def _create_engine():
         if parent and str(parent) != ".":
             parent.mkdir(parents=True, exist_ok=True)
 
-        return create_async_engine(
-            settings.DATABASE_URL,
-            echo=False,
-        )
+    return create_async_engine(settings.DATABASE_URL, **kwargs)
 
-    return create_async_engine(
-        settings.DATABASE_URL,
-        echo=False,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=True,
-    )
+
+def create_run_engine(settings: Settings | None = None) -> AsyncEngine:
+    """
+    Create a dedicated engine for a one-off sync/reconcile run.
+
+    为一次性的同步/对账运行创建专用引擎。
+
+    Sync and reconcile runs execute on their own event loop (see
+    SyncService.run / ReconcileService.run), and SQLAlchemy's connection pool
+    has no loop affinity: a pooled asyncmy/asyncpg connection created on
+    another loop (e.g. the API's) raises RuntimeError when checked out there.
+    NullPool hands the run fresh connections every time; the caller disposes
+    the engine when the run finishes.
+    """
+    from sqlalchemy.pool import NullPool
+
+    return _create_engine(settings, poolclass=NullPool)
 
 
 engine = _create_engine()

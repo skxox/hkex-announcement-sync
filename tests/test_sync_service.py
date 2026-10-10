@@ -19,8 +19,8 @@ class TestPerStockRollback:
         engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        monkeypatch.setattr("app.database.create_run_engine", lambda settings=None: engine)
         factory = async_sessionmaker(engine, expire_on_commit=False)
-        monkeypatch.setattr("app.database.async_session_factory", factory)
 
         async with factory() as db:
             db.add(Announcement(stock_code="00700", news_id="dup-1"))
@@ -62,8 +62,7 @@ class TestExplicitDateRange:
         engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        monkeypatch.setattr("app.database.async_session_factory", factory)
+        monkeypatch.setattr("app.database.create_run_engine", lambda settings=None: engine)
 
         captured: dict = {}
 
