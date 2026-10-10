@@ -88,14 +88,15 @@ async def _run_sync_inline(
         await db.commit()
         logger.info("Inline sync task %s completed", sync_log_id)
 
-        # Send sync result notification
+        # Send sync result notification. The notifier uses a blocking HTTP
+        # client, so run it in a thread to keep the event loop responsive.
         if settings.NOTIFIER_ENABLED and settings.NOTIFIER_ON_SYNC:
             try:
                 from app.notifiers.factory import create_notifier
 
                 notifier = create_notifier(settings)
                 if notifier:
-                    notifier.send_sync_result(sync_log)
+                    await asyncio.to_thread(notifier.send_sync_result, sync_log)
             except Exception:
                 logger.exception("Failed to send sync result notification")
 

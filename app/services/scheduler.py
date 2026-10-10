@@ -235,14 +235,15 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
                     sync_log.error = "; ".join(result["errors"][:3])
                 await db.commit()
 
-                # Send notification
+                # Send notification. The notifier uses a blocking HTTP client,
+                # so run it in a thread to keep the event loop responsive.
                 if settings.NOTIFIER_ENABLED and settings.NOTIFIER_ON_SYNC:
                     try:
                         from app.notifiers.factory import create_notifier
 
                         notifier = create_notifier(settings)
                         if notifier:
-                            notifier.send_sync_result(sync_log)
+                            await asyncio.to_thread(notifier.send_sync_result, sync_log)
                     except Exception:
                         logger.exception("Scheduler notification failed")
 
