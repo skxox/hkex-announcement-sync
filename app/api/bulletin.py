@@ -4,7 +4,7 @@ API endpoints for HKEX bulletin queries with HKEX-compatible format.
 港交所公告查询 API 端点，兼容港交所响应格式。
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -108,7 +108,7 @@ async def list_bulletins(
         data_status=DataStatus(
             status_code=100,
             status_description="正常返回",
-            response_date_time=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+            response_date_time=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
             data_total_count=total,
         ),
         data=bulletin_data,
