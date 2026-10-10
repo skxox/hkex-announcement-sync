@@ -20,7 +20,13 @@ def create_storage_backend(settings: Settings | None = None) -> StorageBackend:
     if settings.STORAGE_BACKEND == StorageBackendEnum.S3:
         # Import lazily so the default install (no "s3" extra) can still boot;
         # boto3 is only required when S3 storage is actually selected.
-        from app.storage.s3 import S3Storage
+        try:
+            from app.storage.s3 import S3Storage
+        except ImportError as exc:
+            raise RuntimeError(
+                "STORAGE_BACKEND='s3' requires the 's3' extra. "
+                "Install it with: uv sync --extra s3 (or pip install 'hkex-announcement-sync[s3]')"
+            ) from exc
 
         return S3Storage(
             endpoint=settings.S3_ENDPOINT,

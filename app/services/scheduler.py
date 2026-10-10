@@ -9,7 +9,7 @@ with adaptive polling frequency and SSE event broadcasting.
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import Settings, get_settings
@@ -196,7 +196,7 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
                 stock_codes=settings.SYNC_STOCK_CODES,
                 mode="incremental",
                 status=SyncStatus.RUNNING,
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
             db.add(sync_log)
             await db.commit()
@@ -208,15 +208,15 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
         from app.services.sync_service import SyncService
 
         service = SyncService(settings)
-        start = datetime.utcnow()
+        start = datetime.now(timezone.utc).replace(tzinfo=None)
 
         try:
             result = await asyncio.to_thread(service.run)
-            elapsed = (datetime.utcnow() - start).total_seconds()
+            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - start).total_seconds()
 
             status = SyncStatus.SUCCESS if not result.get("errors") else SyncStatus.FAILED
         except Exception as exc:
-            elapsed = (datetime.utcnow() - start).total_seconds()
+            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - start).total_seconds()
             result = {"total": 0, "synced": 0, "skipped": 0, "failed": 1, "errors": [str(exc)]}
             status = SyncStatus.FAILED
 
@@ -229,7 +229,7 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
                 sync_log.synced = result.get("synced", 0)
                 sync_log.skipped = result.get("skipped", 0)
                 sync_log.failed = result.get("failed", 0)
-                sync_log.finished_at = datetime.utcnow()
+                sync_log.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 sync_log.duration_seconds = elapsed
                 if result.get("errors"):
                     sync_log.error = "; ".join(result["errors"][:3])

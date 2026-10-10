@@ -3,7 +3,7 @@
 import time
 
 from app.config import Settings
-from app.scraper.http import RateLimiter, browser_headers, create_client, random_ua, USER_AGENTS
+from app.scraper.http import USER_AGENTS, RateLimiter, browser_headers, create_client, random_ua
 
 
 class TestRateLimiter:

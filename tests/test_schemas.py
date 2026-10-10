@@ -1,8 +1,8 @@
 """Tests for Pydantic request/response schemas."""
-import pytest
 from datetime import date
-from app.schemas.sync import ReconcileRequest, SyncRequest, SyncMode
+
 from app.schemas.announcement import AnnouncementListParams, AnnouncementResponse
+from app.schemas.sync import ReconcileRequest
 
 
 class TestReconcileRequest:

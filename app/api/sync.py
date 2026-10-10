@@ -9,7 +9,7 @@ import json
 import logging
 import uuid
 from collections.abc import Coroutine
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -66,36 +66,36 @@ async def _run_sync_inline(
             return
 
         sync_log.status = SyncStatus.RUNNING
-        sync_log.started_at = datetime.utcnow()
+        sync_log.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.commit()
 
         settings = Settings()
         if stock_codes:
             settings = settings.model_copy(update={"SYNC_STOCK_CODES": ",".join(stock_codes)})
 
-        start = datetime.utcnow()
+        start = datetime.now(timezone.utc).replace(tzinfo=None)
 
         try:
             # Constructed inside try so a failure (e.g. bad storage config)
             # marks the SyncLog FAILED instead of leaving it RUNNING forever.
             service = SyncService(settings)
             result = await asyncio.to_thread(service.run, mode=mode, date_from=date_from, date_to=date_to)
-            elapsed = (datetime.utcnow() - start).total_seconds()
+            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - start).total_seconds()
 
             sync_log.status = SyncStatus.SUCCESS if not result.get("errors") else SyncStatus.FAILED
             sync_log.total = result.get("total", 0)
             sync_log.synced = result.get("synced", 0)
             sync_log.skipped = result.get("skipped", 0)
             sync_log.failed = result.get("failed", 0)
-            sync_log.finished_at = datetime.utcnow()
+            sync_log.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
             sync_log.duration_seconds = elapsed
             if result.get("errors"):
                 sync_log.error = "; ".join(result["errors"][:3])
 
         except Exception as exc:
-            elapsed = (datetime.utcnow() - start).total_seconds()
+            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - start).total_seconds()
             sync_log.status = SyncStatus.FAILED
-            sync_log.finished_at = datetime.utcnow()
+            sync_log.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
             sync_log.duration_seconds = elapsed
             sync_log.error = str(exc)[:500]
             logger.exception("Inline sync task %s failed", sync_log_id)
@@ -210,11 +210,11 @@ async def _run_reconcile_inline(
             return
 
         sync_log.status = SyncStatus.RUNNING
-        sync_log.started_at = datetime.utcnow()
+        sync_log.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.commit()
 
         settings = Settings()
-        start = datetime.utcnow()
+        start = datetime.now(timezone.utc).replace(tzinfo=None)
 
         try:
             service = ReconcileService(settings)
@@ -225,7 +225,7 @@ async def _run_reconcile_inline(
                 date_to=date_to,
                 days_back=days_back,
             )
-            elapsed = (datetime.utcnow() - start).total_seconds()
+            elapsed = (datetime.now(timezone.utc).replace(tzinfo=None) - start).total_seconds()
 
             # Partial per-stock failures must not report SUCCESS (the sync
             # path already did this; reconcile unconditionally said SUCCESS).
@@ -234,15 +234,15 @@ async def _run_reconcile_inline(
             sync_log.synced = result.get("updated", 0)
             sync_log.skipped = result.get("unchanged", 0)
             sync_log.failed = result.get("failed", 0)
-            sync_log.finished_at = datetime.utcnow()
+            sync_log.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
             sync_log.duration_seconds = elapsed
             if result.get("errors"):
                 sync_log.error = "; ".join(result["errors"][:3])
 
         except Exception as exc:
             sync_log.status = SyncStatus.FAILED
-            sync_log.finished_at = datetime.utcnow()
-            sync_log.duration_seconds = (datetime.utcnow() - start).total_seconds()
+            sync_log.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            sync_log.duration_seconds = (datetime.now(timezone.utc).replace(tzinfo=None) - start).total_seconds()
             sync_log.error = str(exc)[:500]
             logger.exception("Inline reconcile task %s failed", sync_log_id)
 
