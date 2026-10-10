@@ -1,6 +1,58 @@
-"""Tests for HKEX client cancellation tag detection."""
+"""Tests for HKEX client cancellation tag detection and chunk windowing."""
+from datetime import date
+
 import pytest
-from app.scraper.hkex_client import HKEXClient, CANCELLATION_PATTERNS
+
+from app.scraper.hkex_client import CANCELLATION_PATTERNS, HKEXClient
+
+
+class TestFetchAllChunks:
+    """Regression tests for the monthly chunk loop boundaries."""
+
+    @staticmethod
+    def _collect_chunks(monkeypatch, date_from, date_to, lang="E"):
+        client = HKEXClient()
+        calls = []
+
+        def fake_fetch_chunk(stock_id, chunk_from, chunk_to, lang="E"):
+            calls.append((chunk_from, chunk_to, lang))
+            return []
+
+        monkeypatch.setattr(client, "_fetch_chunk", fake_fetch_chunk)
+        client._fetch_all_chunks("1", date_from, date_to, lang=lang)
+        return calls
+
+    def test_same_day_window_fetches_one_chunk(self, monkeypatch):
+        # Incremental sync passes date_from == date_to once today's announcements
+        # exist; the loop must still fetch the [D, D] chunk instead of skipping it.
+        day = date(2026, 10, 9)
+        calls = self._collect_chunks(monkeypatch, day, day)
+        assert calls == [(day, day, "E")]
+
+    def test_month_span_fetches_contiguous_chunks(self, monkeypatch):
+        calls = self._collect_chunks(monkeypatch, date(2026, 5, 10), date(2026, 7, 5))
+        assert calls == [
+            (date(2026, 5, 10), date(2026, 5, 31), "E"),
+            (date(2026, 6, 1), date(2026, 6, 30), "E"),
+            (date(2026, 7, 1), date(2026, 7, 5), "E"),
+        ]
+
+    def test_year_boundary_chunks(self, monkeypatch):
+        calls = self._collect_chunks(monkeypatch, date(2026, 12, 30), date(2027, 1, 2))
+        assert calls == [
+            (date(2026, 12, 30), date(2026, 12, 31), "E"),
+            (date(2027, 1, 1), date(2027, 1, 2), "E"),
+        ]
+
+    def test_lang_is_forwarded_to_fetch_chunk(self, monkeypatch):
+        day = date(2026, 10, 9)
+        calls = self._collect_chunks(monkeypatch, day, day, lang="ZH")
+        assert calls == [(day, day, "ZH")]
+
+    def test_inverted_range_raises(self):
+        client = HKEXClient()
+        with pytest.raises(ValueError, match="after date_to"):
+            client._fetch_all_chunks("1", date(2026, 6, 2), date(2026, 6, 1))
 
 
 class TestCancellationTagDetection:

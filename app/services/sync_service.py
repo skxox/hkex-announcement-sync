@@ -5,7 +5,7 @@ Sync orchestration service for HKEX announcement pipeline.
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from app.scraper.hkex_client import HKEXClient
 from app.scraper.pdf_downloader import PDFDownloader
 from app.services import announcement_service
 from app.storage.factory import create_storage_backend
+from app.utils.time import hk_today
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,12 @@ class SyncService:
         errors: list[str] = []
 
         with HKEXClient(self._settings) as client, PDFDownloader(self._storage, self._settings) as downloader:
+            run_date_to = hk_today()
             for stock_code in stock_codes:
                 try:
-                    s, k, f, e = self._sync_stock(client, downloader, stock_code, task_state, mode=mode)
+                    s, k, f, e = self._sync_stock(
+                        client, downloader, stock_code, task_state, mode=mode, date_to=run_date_to
+                    )
                     total_synced += s
                     total_skipped += k
                     total_failed += f
@@ -94,6 +98,7 @@ class SyncService:
         stock_code: str,
         task_state: dict | None,
         mode: str = "incremental",
+        date_to: date | None = None,
     ) -> tuple[int, int, int, list[str]]:
         """
         Sync a single stock code by running the async pipeline in a new event loop.
@@ -116,7 +121,9 @@ class SyncService:
 
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(self._sync_stock_async(client, downloader, stock_code, task_state, mode=mode))
+            return loop.run_until_complete(
+                self._sync_stock_async(client, downloader, stock_code, task_state, mode=mode, date_to=date_to)
+            )
         finally:
             loop.close()
 
@@ -127,6 +134,7 @@ class SyncService:
         stock_code: str,
         task_state: dict | None,
         mode: str = "incremental",
+        date_to: date | None = None,
     ) -> tuple[int, int, int, list[str]]:
         """
         Async implementation of stock sync: resolve ID, fetch metadata, dedup, insert, download PDFs.
@@ -166,20 +174,34 @@ class SyncService:
         else:
             last_sync = await announcement_service.get_last_sync_date(self._db, stock_code)
             if last_sync:
-                date_from = last_sync.date() if hasattr(last_sync, "date") else last_sync
+                date_from = last_sync.date()
             else:
-                date_from = date.today() - timedelta(days=90)
-        date_to = date.today()
+                date_from = hk_today() - timedelta(days=90)
+        # HKEX dates are Hong Kong local time, so "today" must be HK time too,
+        # otherwise a UTC server lags a day behind. date_to is computed once by
+        # run() so a multi-stock run straddling HK midnight stays consistent.
+        date_to = date_to or hk_today()
+
+        # Guard against a water-mark in the future (e.g. manually inserted
+        # records) silently producing an empty window forever.
+        if date_from > date_to:
+            logger.warning("date_from %s is after date_to %s, clamping to date_to", date_from, date_to)
+            date_from = date_to
 
         # 3. Fetch trilingual metadata from HKEX (EN + ZH + SC conversion)
         records = client.search_announcements(stock_id, date_from, date_to, stock_code=stock_code)
         logger.info("Fetched %d trilingual records for %s", len(records), stock_code)
 
-        # 4. Dedup by news_id
+        # 4. Dedup by news_id. Records without a news_id cannot be deduplicated
+        # and would violate the (stock_code, news_id) unique index on every
+        # re-fetch of the same window, so they are skipped with a warning.
         existing_news_ids = await announcement_service.get_existing_news_ids(
             self._db, stock_code, [r["news_id"] for r in records if r["news_id"]]
         )
-        new_records = [r for r in records if r["news_id"] not in existing_news_ids]
+        empty_id_count = sum(1 for r in records if not r["news_id"])
+        if empty_id_count:
+            logger.warning("Skipping %d records for %s with empty news_id", empty_id_count, stock_code)
+        new_records = [r for r in records if r["news_id"] and r["news_id"] not in existing_news_ids]
         logger.info("New records after dedup: %d", len(new_records))
 
         if not new_records:
@@ -213,7 +235,7 @@ class SyncService:
                     "announcement_date": r.get("announcement_date"),
                     "source": "auto",
                     "status": r.get("status", "active"),
-                    "last_synced_at": datetime.utcnow(),
+                    "last_synced_at": datetime.now(timezone.utc).replace(tzinfo=None),
                 }
             )
 
@@ -268,7 +290,7 @@ class SyncService:
                         ann.file_path_zh = dr.file_path
                         ann.file_size_zh = dr.file_size
                         ann.file_hash_zh = dr.file_hash
-                    ann.last_synced_at = datetime.utcnow()
+                    ann.last_synced_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
             await self._db.commit()
 

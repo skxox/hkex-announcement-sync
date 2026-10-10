@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.scraper.hkex_client import HKEXClient
 from app.services import announcement_service
+from app.utils.time import hk_today
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class ReconcileService:
         days_back: int,
     ) -> dict[str, Any]:
         codes = stock_codes or self._settings.stock_codes
-        date_to = date_to or date.today()
+        date_to = date_to or hk_today()
         date_from = date_from or (date_to - timedelta(days=days_back))
 
         total_updated = 0

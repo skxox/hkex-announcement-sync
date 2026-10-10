@@ -266,8 +266,13 @@ class HKEXClient:
         """
         all_records: list[dict[str, Any]] = []
 
+        if date_from > date_to:
+            raise ValueError(f"date_from {date_from} is after date_to {date_to}")
+
         chunk_start = date_from
-        while chunk_start < date_to:
+        # Inclusive comparison: incremental sync passes date_from == date_to
+        # once today's announcements exist in the DB, and a [D, D] window is valid.
+        while chunk_start <= date_to:
             if chunk_start.month == 12:
                 next_month = date(chunk_start.year + 1, 1, 1)
             else:
@@ -284,10 +289,7 @@ class HKEXClient:
             records = self._fetch_chunk(stock_id, chunk_start, chunk_end, lang=lang)
             all_records.extend(records)
 
-            if chunk_start.month == 12:
-                chunk_start = date(chunk_start.year + 1, 1, 1)
-            else:
-                chunk_start = date(chunk_start.year, chunk_start.month + 1, 1)
+            chunk_start = next_month
 
         return all_records
 

@@ -5,7 +5,7 @@ Database service for announcement CRUD operations.
 """
 
 import uuid
-from datetime import date, datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,7 +112,7 @@ async def get_existing_news_ids(
 async def get_last_sync_date(
     db: AsyncSession,
     stock_code: str,
-) -> date | None:
+) -> datetime | None:
     """
     Get the most recent announcement_date for a given stock code.
 
@@ -123,8 +123,8 @@ async def get_last_sync_date(
     stock_code: Stock code to query. / 要查询的股票代码。
 
     Returns:
-    date | None: The latest announcement date, or None if no records exist.
-    最新公告日期，无记录时返回 None。
+    datetime | None: The latest announcement datetime, or None if no records exist.
+    最新公告日期时间，无记录时返回 None。
 
     """
     result = await db.execute(
@@ -191,7 +191,7 @@ async def update_announcement_file(
             announcement.file_path_zh = file_path
             announcement.file_size_zh = file_size
             announcement.file_hash_zh = file_hash
-        announcement.last_synced_at = datetime.utcnow()
+        announcement.last_synced_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.flush()
 
 
