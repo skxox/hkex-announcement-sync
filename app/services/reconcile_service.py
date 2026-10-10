@@ -152,7 +152,7 @@ class ReconcileService:
                     "filing_type_cn": r.get("filing_type_cn"),
                 })
 
-        updated = await announcement_service.bulk_update_status(self._db, updates)
+        updated = await announcement_service.bulk_update_status(self._db, updates, stock_code)
         await self._db.commit()
 
         logger.info(

@@ -228,15 +228,23 @@ async def get_announcements_by_news_ids(
 async def bulk_update_status(
     db: AsyncSession,
     updates: list[dict],
+    stock_code: str,
 ) -> int:
     """
     Bulk update status and filing_type for announcements identified by news_id.
 
     按 news_id 批量更新公告状态和 filing_type。
 
+    Uniqueness is (stock_code, news_id) -- joint filings can carry the same
+    news_id under two stocks -- so the lookup must be scoped to one stock.
+
+    唯一性为 (stock_code, news_id)——联合公告可能在两只股票下使用相同
+    news_id——因此查询必须限定在单一股票内。
+
     Args:
     db: Async database session. / 异步数据库会话。
     updates: List of dicts with keys: news_id, status, and optionally filing_type_en/zh/cn.
+    stock_code: Stock code all updates belong to. / 这些更新所属的股票代码。
 
     Returns:
     int: Number of records actually updated.
@@ -247,7 +255,10 @@ async def bulk_update_status(
     count = 0
     for upd in updates:
         result = await db.execute(
-            select(Announcement).where(Announcement.news_id == upd["news_id"])
+            select(Announcement).where(
+                Announcement.news_id == upd["news_id"],
+                Announcement.stock_code == stock_code,
+            )
         )
         ann = result.scalar_one_or_none()
         if ann and ann.status != upd["status"]:

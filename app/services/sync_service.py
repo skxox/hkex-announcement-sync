@@ -255,7 +255,12 @@ class SyncService:
 
         from app.models import Announcement
 
-        result = await self._db.execute(select(Announcement).where(Announcement.news_id.in_(inserted_news_ids)))
+        result = await self._db.execute(
+            select(Announcement).where(
+                Announcement.news_id.in_(inserted_news_ids),
+                Announcement.stock_code == stock_code,
+            )
+        )
         inserted_announcements = list(result.scalars().all())
 
         # 6. Download PDFs (EN and ZH versions)
