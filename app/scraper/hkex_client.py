@@ -119,6 +119,11 @@ class HKEXClient:
             )
         return self._rate_limiter
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+    )
     def get_stock_id(self, stock_code: str) -> str:
         """
         Resolve a stock code (e.g. '00700') to its HKEX internal stock ID.
