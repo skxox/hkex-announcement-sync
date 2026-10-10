@@ -277,18 +277,20 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
             except Exception:
                 logger.exception("Post-sync reconciliation failed")
 
-            # Broadcast SSE event
-            _broadcast_sse("sync_complete", {
-                "task_id": str(log_id),
-                "status": status.value,
-                "synced": result.get("synced", 0),
-                "skipped": result.get("skipped", 0),
-                "failed": result.get("failed", 0),
-                "duration": round(elapsed, 1),
-                "next_interval": _current_interval,
-            })
+        # Broadcast and return regardless of reconcile config or sync outcome:
+        # run_scheduler() consumes the returned dict to adjust the poll
+        # interval, so returning None on a FAILED cycle would break backoff.
+        _broadcast_sse("sync_complete", {
+            "task_id": str(log_id),
+            "status": status.value,
+            "synced": result.get("synced", 0),
+            "skipped": result.get("skipped", 0),
+            "failed": result.get("failed", 0),
+            "duration": round(elapsed, 1),
+            "next_interval": _current_interval,
+        })
 
-            return result
+        return result
 
     finally:
         _sync_running = False
