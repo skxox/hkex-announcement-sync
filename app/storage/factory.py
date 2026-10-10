@@ -8,7 +8,6 @@ from app.config import Settings
 from app.config import StorageBackend as StorageBackendEnum
 from app.storage.base import StorageBackend
 from app.storage.local import LocalStorage
-from app.storage.s3 import S3Storage
 
 
 def create_storage_backend(settings: Settings | None = None) -> StorageBackend:
@@ -19,6 +18,10 @@ def create_storage_backend(settings: Settings | None = None) -> StorageBackend:
     """
     settings = settings or Settings()
     if settings.STORAGE_BACKEND == StorageBackendEnum.S3:
+        # Import lazily so the default install (no "s3" extra) can still boot;
+        # boto3 is only required when S3 storage is actually selected.
+        from app.storage.s3 import S3Storage
+
         return S3Storage(
             endpoint=settings.S3_ENDPOINT,
             bucket=settings.S3_BUCKET,
