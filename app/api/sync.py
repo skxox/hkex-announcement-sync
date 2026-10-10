@@ -127,27 +127,40 @@ async def trigger_sync(request: SyncRequest):
         )
         return {"task_id": task.id}
 
-    # Inline mode — create a SyncLog record and run in background
-    from app.database import async_session_factory
+    # Inline mode — create a SyncLog record and run in background.
+    # Claim the running flag synchronously (before any await) so a concurrent
+    # POST in the same tick still gets 409; the spawned task releases it.
+    from app.services.scheduler import set_sync_running
 
-    async with async_session_factory() as db:
-        sync_log = SyncLog(
-            stock_codes=stock_codes_str,
-            mode=request.mode.value,
-            status=SyncStatus.PENDING,
-        )
-        db.add(sync_log)
-        await db.commit()
-        await db.refresh(sync_log)
-        log_id = sync_log.id
+    set_sync_running(True)
+    try:
+        from app.database import async_session_factory
 
-    asyncio.create_task(
-        _run_sync_inline(
-            log_id,
-            request.stock_codes,
-            request.mode.value,
-        )
-    )
+        async with async_session_factory() as db:
+            sync_log = SyncLog(
+                stock_codes=stock_codes_str,
+                mode=request.mode.value,
+                status=SyncStatus.PENDING,
+            )
+            db.add(sync_log)
+            await db.commit()
+            await db.refresh(sync_log)
+            log_id = sync_log.id
+
+        async def _run_and_release() -> None:
+            try:
+                await _run_sync_inline(
+                    log_id,
+                    request.stock_codes,
+                    request.mode.value,
+                )
+            finally:
+                set_sync_running(False)
+
+        asyncio.create_task(_run_and_release())
+    except Exception:
+        set_sync_running(False)
+        raise
 
     return {"task_id": str(log_id)}
 
@@ -217,7 +230,7 @@ async def trigger_reconcile(request: ReconcileRequest):
 
     触发对账操作，检测公告状态变更。
     """
-    from app.services.scheduler import is_sync_running
+    from app.services.scheduler import is_sync_running, set_sync_running
 
     if is_sync_running():
         raise HTTPException(status_code=409, detail="A sync task is already running")
@@ -228,26 +241,37 @@ async def trigger_reconcile(request: ReconcileRequest):
     stock_codes = request.stock_codes or settings.stock_codes
     stock_codes_str = ",".join(stock_codes)
 
-    async with async_session_factory() as db:
-        sync_log = SyncLog(
-            stock_codes=stock_codes_str,
-            mode="reconcile",
-            status=SyncStatus.PENDING,
-        )
-        db.add(sync_log)
-        await db.commit()
-        await db.refresh(sync_log)
-        log_id = sync_log.id
+    # Claim the running flag synchronously (before any await); the spawned
+    # task releases it, so reconcile and sync mutually exclude each other.
+    set_sync_running(True)
+    try:
+        async with async_session_factory() as db:
+            sync_log = SyncLog(
+                stock_codes=stock_codes_str,
+                mode="reconcile",
+                status=SyncStatus.PENDING,
+            )
+            db.add(sync_log)
+            await db.commit()
+            await db.refresh(sync_log)
+            log_id = sync_log.id
 
-    asyncio.create_task(
-        _run_reconcile_inline(
-            log_id,
-            stock_codes,
-            request.date_from,
-            request.date_to,
-            request.days_back,
-        )
-    )
+        async def _run_and_release() -> None:
+            try:
+                await _run_reconcile_inline(
+                    log_id,
+                    stock_codes,
+                    request.date_from,
+                    request.date_to,
+                    request.days_back,
+                )
+            finally:
+                set_sync_running(False)
+
+        asyncio.create_task(_run_and_release())
+    except Exception:
+        set_sync_running(False)
+        raise
 
     return {"task_id": str(log_id)}
 

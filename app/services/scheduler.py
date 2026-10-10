@@ -37,6 +37,22 @@ def is_sync_running() -> bool:
     return _sync_running
 
 
+def set_sync_running(value: bool) -> None:
+    """
+    Set the sync-running flag from outside the scheduler.
+
+    供调度器之外的模块（如 API 内联触发的同步/对账）设置同步运行标志，
+    使并发保护对手动触发的任务同样生效。
+
+    Args:
+    value: True while the task is running, False when it finishes.
+    任务运行期间为 True，结束时为 False。
+
+    """
+    global _sync_running
+    _sync_running = value
+
+
 def get_current_interval() -> int:
     """
     Get the current polling interval in seconds.
