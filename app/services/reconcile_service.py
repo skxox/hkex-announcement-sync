@@ -82,6 +82,12 @@ class ReconcileService:
                     total_unchanged += uc
                     total_checked += checked
                 except Exception as exc:
+                    # Roll back so one stock's failure does not poison the shared
+                    # session for the remaining stocks (PendingRollbackError).
+                    try:
+                        await self._db.rollback()
+                    except Exception:
+                        logger.warning("Rollback after failed reconcile of %s also failed", stock_code, exc_info=True)
                     msg = f"Failed to reconcile {stock_code}: {exc}"
                     logger.exception(msg)
                     errors.append(msg)

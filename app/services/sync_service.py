@@ -124,6 +124,15 @@ class SyncService:
             return loop.run_until_complete(
                 self._sync_stock_async(client, downloader, stock_code, task_state, mode=mode, date_to=date_to)
             )
+        except Exception:
+            # A failed flush leaves the session in pending-rollback state; without
+            # an explicit rollback every subsequent stock fails with
+            # PendingRollbackError. Roll back on the same loop that ran the work.
+            try:
+                loop.run_until_complete(self._db.rollback())
+            except Exception:
+                logger.warning("Rollback after failed sync of %s also failed", stock_code, exc_info=True)
+            raise
         finally:
             loop.close()
 
