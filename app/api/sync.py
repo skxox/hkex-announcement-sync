@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Coroutine
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,6 +30,18 @@ from app.schemas.sync import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sync", tags=["sync"])
+
+# Hold strong references to fire-and-forget background tasks: the event loop
+# keeps only weak references, so an unreferenced task can be garbage-collected
+# mid-run (leaving its SyncLog stuck in RUNNING).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro: Coroutine) -> None:
+    """Create a tracked background task that is discarded on completion."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _run_sync_inline(
@@ -167,7 +180,7 @@ async def trigger_sync(request: SyncRequest):
             finally:
                 set_sync_running(False)
 
-        asyncio.create_task(_run_and_release())
+        _spawn_background(_run_and_release())
     except Exception:
         set_sync_running(False)
         raise
@@ -214,13 +227,17 @@ async def _run_reconcile_inline(
             )
             elapsed = (datetime.utcnow() - start).total_seconds()
 
-            sync_log.status = SyncStatus.SUCCESS
+            # Partial per-stock failures must not report SUCCESS (the sync
+            # path already did this; reconcile unconditionally said SUCCESS).
+            sync_log.status = SyncStatus.SUCCESS if not result.get("errors") else SyncStatus.FAILED
             sync_log.total = result.get("total", 0)
             sync_log.synced = result.get("updated", 0)
             sync_log.skipped = result.get("unchanged", 0)
             sync_log.failed = result.get("failed", 0)
             sync_log.finished_at = datetime.utcnow()
             sync_log.duration_seconds = elapsed
+            if result.get("errors"):
+                sync_log.error = "; ".join(result["errors"][:3])
 
         except Exception as exc:
             sync_log.status = SyncStatus.FAILED
@@ -278,7 +295,7 @@ async def trigger_reconcile(request: ReconcileRequest):
             finally:
                 set_sync_running(False)
 
-        asyncio.create_task(_run_and_release())
+        _spawn_background(_run_and_release())
     except Exception:
         set_sync_running(False)
         raise

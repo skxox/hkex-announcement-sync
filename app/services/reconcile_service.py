@@ -84,18 +84,20 @@ class ReconcileService:
         total_updated = 0
         total_unchanged = 0
         total_checked = 0
+        total_missing = 0
         total_failed = 0
         errors: list[str] = []
 
         with HKEXClient(self._settings) as client:
             for stock_code in codes:
                 try:
-                    u, uc, checked = await self._reconcile_stock(
+                    u, uc, checked, missing = await self._reconcile_stock(
                         client, stock_code, date_from, date_to
                     )
                     total_updated += u
                     total_unchanged += uc
                     total_checked += checked
+                    total_missing += missing
                 except Exception as exc:
                     # Roll back so one stock's failure does not poison the shared
                     # session for the remaining stocks (PendingRollbackError).
@@ -112,6 +114,7 @@ class ReconcileService:
             "total": total_checked + total_failed,
             "updated": total_updated,
             "unchanged": total_unchanged,
+            "missing": total_missing,
             "failed": total_failed,
             "errors": errors,
         }
@@ -122,11 +125,13 @@ class ReconcileService:
         stock_code: str,
         date_from: date,
         date_to: date,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, int]:
         """
         Reconcile a single stock code.
 
-        Returns (updated_count, unchanged_count, total_checked).
+        Returns (updated_count, unchanged_count, checked_count, missing_count).
+        Records HKEX has but the DB does not are counted as missing, not unchanged.
+        返回（已更新、未变化、已检查、仅 HKEX 存在）计数。
         """
         stock_id = client.get_stock_id(stock_code)
         records = client.search_announcements(
@@ -155,8 +160,14 @@ class ReconcileService:
         updated = await announcement_service.bulk_update_status(self._db, updates, stock_code)
         await self._db.commit()
 
+        # Counters reflect DB coverage: records HKEX has but the DB does not
+        # are "missing", not "unchanged".
+        checked = len(existing)
+        missing = len(news_ids) - checked
+        unchanged = checked - updated
+
         logger.info(
-            "Reconciliation for %s: %d updated of %d checked",
-            stock_code, updated, len(records),
+            "Reconciliation for %s: %d updated, %d unchanged, %d missing (HKEX only)",
+            stock_code, updated, unchanged, missing,
         )
-        return updated, len(records) - updated, len(records)
+        return updated, unchanged, checked, missing
