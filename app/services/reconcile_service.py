@@ -35,8 +35,10 @@ class ReconcileService:
     4. Bulk update changed statuses
     """
 
-    def __init__(self, db: AsyncSession, settings: Settings | None = None):
-        self._db = db
+    def __init__(self, settings: Settings | None = None):
+        # The database session is created inside _run_async on the run's own
+        # event loop, keeping every DB call on one loop (required by asyncmy/asyncpg).
+        self._db: AsyncSession | None = None
         self._settings = settings or Settings()
 
     def run(
@@ -56,6 +58,19 @@ class ReconcileService:
             loop.close()
 
     async def _run_async(
+        self,
+        stock_codes: list[str] | None,
+        date_from: date | None,
+        date_to: date | None,
+        days_back: int,
+    ) -> dict[str, Any]:
+        from app.database import async_session_factory
+
+        async with async_session_factory() as db:
+            self._db = db
+            return await self._reconcile_all_stocks(stock_codes, date_from, date_to, days_back)
+
+    async def _reconcile_all_stocks(
         self,
         stock_codes: list[str] | None,
         date_from: date | None,

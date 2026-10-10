@@ -4,6 +4,7 @@ Sync orchestration service for HKEX announcement pipeline.
 港交所公告同步流水线的编排服务。
 """
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -27,19 +28,19 @@ class SyncService:
     编排完整的同步流水线：抓取元数据 -> 去重 -> 存储 -> 下载 PDF 文件。
     """
 
-    def __init__(self, db: AsyncSession, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None):
         """
-        Initialize the sync service with a database session and optional settings.
+        Initialize the sync service with optional settings.
 
-        使用数据库会话和可选配置初始化同步服务。
+        使用可选配置初始化同步服务。数据库会话在 run() 内部按需创建，
+        绑定到执行本次同步的事件循环。
 
         Args:
-        db: Async SQLAlchemy database session. / 异步 SQLAlchemy 数据库会话。
         settings: Application settings. Uses defaults if None.
         应用配置。为 None 时使用默认值。
 
         """
-        self._db = db
+        self._db: AsyncSession | None = None
         self._settings = settings or Settings()
         self._storage = create_storage_backend(self._settings)
 
@@ -48,6 +49,15 @@ class SyncService:
         Run the full sync pipeline for all configured stock codes.
 
         对所有已配置的股票代码运行完整同步流水线。
+
+        Creates a dedicated event loop and database session so every DB call in
+        the run happens on one loop regardless of which thread/loop invoked run().
+        This matters for asyncmy/asyncpg, whose connections bind to the loop they
+        were created on; sharing a session across loops raises RuntimeError.
+
+        创建专用事件循环和数据库会话，确保本次运行中的所有数据库调用都在
+        同一个循环上执行，无论 run() 是从哪个线程/循环调用的。这对
+        asyncmy/asyncpg 尤为重要：其连接绑定创建时的事件循环。
 
         Args:
         task_state: Optional dict for reporting progress to Celery task.
@@ -60,6 +70,22 @@ class SyncService:
         包含 total、synced、skipped、failed、errors 键的摘要字典。
 
         """
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self._run_async(task_state, mode=mode))
+        finally:
+            loop.close()
+
+    async def _run_async(self, task_state: dict | None, mode: str) -> dict[str, Any]:
+        """Async pipeline driver: own loop, own session, one loop per run."""
+        from app.database import async_session_factory
+
+        async with async_session_factory() as db:
+            self._db = db
+            return await self._run_all_stocks(task_state, mode)
+
+    async def _run_all_stocks(self, task_state: dict | None, mode: str) -> dict[str, Any]:
+        """Iterate configured stock codes, isolating per-stock failures."""
         stock_codes = self._settings.stock_codes
         total_synced = 0
         total_skipped = 0
@@ -70,7 +96,7 @@ class SyncService:
             run_date_to = hk_today()
             for stock_code in stock_codes:
                 try:
-                    s, k, f, e = self._sync_stock(
+                    s, k, f, e = await self._sync_stock_async(
                         client, downloader, stock_code, task_state, mode=mode, date_to=run_date_to
                     )
                     total_synced += s
@@ -78,6 +104,12 @@ class SyncService:
                     total_failed += f
                     errors.extend(e)
                 except Exception as exc:
+                    # Roll back on the loop that ran the failed DB work, so one
+                    # stock's failure does not poison the session for the rest.
+                    try:
+                        await self._db.rollback()
+                    except Exception:
+                        logger.warning("Rollback after failed sync of %s also failed", stock_code, exc_info=True)
                     msg = f"Failed to sync {stock_code}: {exc}"
                     logger.exception(msg)
                     errors.append(msg)
@@ -90,51 +122,6 @@ class SyncService:
             "failed": total_failed,
             "errors": errors,
         }
-
-    def _sync_stock(
-        self,
-        client: HKEXClient,
-        downloader: PDFDownloader,
-        stock_code: str,
-        task_state: dict | None,
-        mode: str = "incremental",
-        date_to: date | None = None,
-    ) -> tuple[int, int, int, list[str]]:
-        """
-        Sync a single stock code by running the async pipeline in a new event loop.
-
-        通过在新事件循环中运行异步流水线来同步单个股票代码。
-
-        Args:
-        client: HKEX scraper client instance. / 港交所抓取客户端实例。
-        downloader: PDF downloader instance. / PDF 下载器实例。
-        stock_code: The stock code to sync. / 要同步的股票代码。
-        task_state: Optional progress tracking dict. / 可选的进度跟踪字典。
-        mode: Sync mode - 'incremental' or 'full'. / 同步模式。
-
-        Returns:
-        tuple[int, int, int, list[str]]: (synced, skipped, failed, errors) counts.
-        （已同步、已跳过、已失败、错误列表）计数。
-
-        """
-        import asyncio
-
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                self._sync_stock_async(client, downloader, stock_code, task_state, mode=mode, date_to=date_to)
-            )
-        except Exception:
-            # A failed flush leaves the session in pending-rollback state; without
-            # an explicit rollback every subsequent stock fails with
-            # PendingRollbackError. Roll back on the same loop that ran the work.
-            try:
-                loop.run_until_complete(self._db.rollback())
-            except Exception:
-                logger.warning("Rollback after failed sync of %s also failed", stock_code, exc_info=True)
-            raise
-        finally:
-            loop.close()
 
     async def _sync_stock_async(
         self,

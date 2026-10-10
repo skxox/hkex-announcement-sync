@@ -58,10 +58,12 @@ async def _run_sync_inline(
         if stock_codes:
             settings = settings.model_copy(update={"SYNC_STOCK_CODES": ",".join(stock_codes)})
 
-        service = SyncService(db, settings)
         start = datetime.utcnow()
 
         try:
+            # Constructed inside try so a failure (e.g. bad storage config)
+            # marks the SyncLog FAILED instead of leaving it RUNNING forever.
+            service = SyncService(settings)
             result = await asyncio.to_thread(service.run, mode=mode)
             elapsed = (datetime.utcnow() - start).total_seconds()
 
@@ -191,10 +193,10 @@ async def _run_reconcile_inline(
         await db.commit()
 
         settings = Settings()
-        service = ReconcileService(db, settings)
         start = datetime.utcnow()
 
         try:
+            service = ReconcileService(settings)
             result = await asyncio.to_thread(
                 service.run,
                 stock_codes=stock_codes,

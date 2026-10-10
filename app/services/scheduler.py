@@ -203,24 +203,25 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
             await db.refresh(sync_log)
             log_id = sync_log.id
 
-        # Run sync
+        # Run sync. The service creates its own loop/session; the SyncLog is
+        # updated on this coroutine's session afterwards.
         from app.services.sync_service import SyncService
 
+        service = SyncService(settings)
+        start = datetime.utcnow()
+
+        try:
+            result = await asyncio.to_thread(service.run)
+            elapsed = (datetime.utcnow() - start).total_seconds()
+
+            status = SyncStatus.SUCCESS if not result.get("errors") else SyncStatus.FAILED
+        except Exception as exc:
+            elapsed = (datetime.utcnow() - start).total_seconds()
+            result = {"total": 0, "synced": 0, "skipped": 0, "failed": 1, "errors": [str(exc)]}
+            status = SyncStatus.FAILED
+
+        # Update SyncLog
         async with async_session_factory() as db:
-            service = SyncService(db, settings)
-            start = datetime.utcnow()
-
-            try:
-                result = await asyncio.to_thread(service.run)
-                elapsed = (datetime.utcnow() - start).total_seconds()
-
-                status = SyncStatus.SUCCESS if not result.get("errors") else SyncStatus.FAILED
-            except Exception as exc:
-                elapsed = (datetime.utcnow() - start).total_seconds()
-                result = {"total": 0, "synced": 0, "skipped": 0, "failed": 1, "errors": [str(exc)]}
-                status = SyncStatus.FAILED
-
-            # Update SyncLog
             sync_log = await db.get(SyncLog, log_id)
             if sync_log:
                 sync_log.status = status
@@ -245,36 +246,35 @@ async def _execute_scheduled_sync(settings: Settings) -> dict[str, Any]:
                     except Exception:
                         logger.exception("Scheduler notification failed")
 
-            logger.info(
-                "Scheduled sync completed: status=%s, synced=%d, skipped=%d, %.1fs",
-                status.value,
-                result.get("synced", 0),
-                result.get("skipped", 0),
-                elapsed,
-            )
+        logger.info(
+            "Scheduled sync completed: status=%s, synced=%d, skipped=%d, %.1fs",
+            status.value,
+            result.get("synced", 0),
+            result.get("skipped", 0),
+            elapsed,
+        )
 
-            # Run reconciliation after successful sync
-            if settings.RECONCILE_ENABLED and status == SyncStatus.SUCCESS:
-                try:
-                    from app.services.reconcile_service import ReconcileService
+        # Run reconciliation after successful sync
+        if settings.RECONCILE_ENABLED and status == SyncStatus.SUCCESS:
+            try:
+                from app.services.reconcile_service import ReconcileService
 
-                    async with async_session_factory() as db:
-                        reconcile_service = ReconcileService(db, settings)
-                        reconcile_result = await asyncio.to_thread(
-                            reconcile_service.run,
-                            days_back=settings.RECONCILE_DAYS_BACK,
-                        )
-                        logger.info(
-                            "Post-sync reconciliation: %d updated, %d unchanged",
-                            reconcile_result.get("updated", 0),
-                            reconcile_result.get("unchanged", 0),
-                        )
-                        _broadcast_sse("reconcile_complete", {
-                            "updated": reconcile_result.get("updated", 0),
-                            "unchanged": reconcile_result.get("unchanged", 0),
-                        })
-                except Exception:
-                    logger.exception("Post-sync reconciliation failed")
+                reconcile_service = ReconcileService(settings)
+                reconcile_result = await asyncio.to_thread(
+                    reconcile_service.run,
+                    days_back=settings.RECONCILE_DAYS_BACK,
+                )
+                logger.info(
+                    "Post-sync reconciliation: %d updated, %d unchanged",
+                    reconcile_result.get("updated", 0),
+                    reconcile_result.get("unchanged", 0),
+                )
+                _broadcast_sse("reconcile_complete", {
+                    "updated": reconcile_result.get("updated", 0),
+                    "unchanged": reconcile_result.get("unchanged", 0),
+                })
+            except Exception:
+                logger.exception("Post-sync reconciliation failed")
 
             # Broadcast SSE event
             _broadcast_sse("sync_complete", {

@@ -4,7 +4,6 @@ Celery task definitions for HKEX announcement sync.
 港交所公告同步的 Celery 任务定义。
 """
 
-import asyncio
 import logging
 from typing import Any
 
@@ -29,7 +28,6 @@ def sync_announcements_task(
     Celery task to sync announcements from HKEX.
     """
     from app.config import Settings
-    from app.database import async_session_factory
     from app.services.sync_service import SyncService
 
     settings = Settings()
@@ -38,18 +36,10 @@ def sync_announcements_task(
 
     self.update_state(state="RUNNING", meta={"progress": {"total": 0, "synced": 0, "skipped": 0, "failed": 0}})
 
-    async def _run():
-        async with async_session_factory() as db:
-            task_state = {}
-            service = SyncService(db, settings)
-            result = service.run(task_state, mode=mode)
-            return result
-
-    loop = asyncio.new_event_loop()
-    try:
-        result = loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    # SyncService.run() creates its own event loop and session.
+    task_state = {}
+    service = SyncService(settings)
+    result = service.run(task_state, mode=mode)
 
     logger.info("Sync task completed: %s", result)
     return result
