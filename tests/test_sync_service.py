@@ -1,8 +1,8 @@
-"""Regression tests for sync service session handling."""
+"""Regression tests for sync service session handling and date windows."""
 
 import asyncio
+from datetime import date
 
-import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -29,7 +29,8 @@ class TestPerStockRollback:
         service = SyncService(Settings(SYNC_STOCK_CODES="00700,09988"))
         calls: list[str] = []
 
-        async def fake_sync_stock_async(client, downloader, stock_code, task_state, mode="incremental", date_to=None):
+        async def fake_sync_stock_async(client, downloader, stock_code, task_state, mode="incremental",
+                                        date_from=None, date_to=None):
             calls.append(stock_code)
             if stock_code == "00700":
                 # Violates the (stock_code, news_id) unique index on flush.
@@ -52,4 +53,34 @@ class TestPerStockRollback:
         # The second stock's query succeeded and counted only the seeded row.
         assert result["skipped"] == 1
 
+        await engine.dispose()
+
+
+class TestExplicitDateRange:
+    async def test_explicit_range_overrides_mode_window(self, monkeypatch):
+        """POST /api/sync date range must reach the per-stock pipeline."""
+        engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        monkeypatch.setattr("app.database.async_session_factory", factory)
+
+        captured: dict = {}
+
+        async def fake_sync_stock_async(client, downloader, stock_code, task_state, mode="incremental",
+                                        date_from=None, date_to=None):
+            captured["date_from"], captured["date_to"] = date_from, date_to
+            return 0, 0, 0, []
+
+        service = SyncService(Settings())
+        monkeypatch.setattr(service, "_sync_stock_async", fake_sync_stock_async)
+
+        await asyncio.to_thread(
+            service.run,
+            mode="incremental",
+            date_from=date(2026, 1, 1),
+            date_to=date(2026, 1, 31),
+        )
+
+        assert captured == {"date_from": date(2026, 1, 1), "date_to": date(2026, 1, 31)}
         await engine.dispose()

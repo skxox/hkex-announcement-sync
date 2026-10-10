@@ -5,6 +5,7 @@ Celery task definitions for HKEX announcement sync.
 """
 
 import logging
+from datetime import date
 from typing import Any
 
 from app.tasks.celery_app import celery_app
@@ -39,7 +40,12 @@ def sync_announcements_task(
     # SyncService.run() creates its own event loop and session.
     task_state = {}
     service = SyncService(settings)
-    result = service.run(task_state, mode=mode)
+    result = service.run(
+        task_state,
+        mode=mode,
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+    )
 
     logger.info("Sync task completed: %s", result)
     return result

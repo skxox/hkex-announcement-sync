@@ -22,7 +22,7 @@ async def api_env(monkeypatch):
 
     release = asyncio.Event()
 
-    async def fake_run_inline(log_id, stock_codes, mode):
+    async def fake_run_inline(log_id, stock_codes, mode, date_from=None, date_to=None):
         await release.wait()
 
     monkeypatch.setattr("app.api.sync._run_sync_inline", fake_run_inline)

@@ -44,7 +44,13 @@ class SyncService:
         self._settings = settings or Settings()
         self._storage = create_storage_backend(self._settings)
 
-    def run(self, task_state: dict | None = None, mode: str = "incremental") -> dict[str, Any]:
+    def run(
+        self,
+        task_state: dict | None = None,
+        mode: str = "incremental",
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> dict[str, Any]:
         """
         Run the full sync pipeline for all configured stock codes.
 
@@ -64,6 +70,10 @@ class SyncService:
         用于向 Celery 任务报告进度的可选字典。
         mode: Sync mode - 'incremental' or 'full'. / 同步模式。
         incremental: sync from last sync date; full: sync from HKEX_FULL_HISTORY_START.
+        date_from: Explicit start date; overrides the mode-derived window.
+        显式起始日期；覆盖按模式推导的窗口。
+        date_to: Explicit end date; defaults to today (HK time).
+        显式结束日期；默认为今天（港时区）。
 
         Returns:
         dict[str, Any]: Summary with keys: total, synced, skipped, failed, errors.
@@ -72,19 +82,33 @@ class SyncService:
         """
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(self._run_async(task_state, mode=mode))
+            return loop.run_until_complete(
+                self._run_async(task_state, mode=mode, date_from=date_from, date_to=date_to)
+            )
         finally:
             loop.close()
 
-    async def _run_async(self, task_state: dict | None, mode: str) -> dict[str, Any]:
+    async def _run_async(
+        self,
+        task_state: dict | None,
+        mode: str,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> dict[str, Any]:
         """Async pipeline driver: own loop, own session, one loop per run."""
         from app.database import async_session_factory
 
         async with async_session_factory() as db:
             self._db = db
-            return await self._run_all_stocks(task_state, mode)
+            return await self._run_all_stocks(task_state, mode, date_from, date_to)
 
-    async def _run_all_stocks(self, task_state: dict | None, mode: str) -> dict[str, Any]:
+    async def _run_all_stocks(
+        self,
+        task_state: dict | None,
+        mode: str,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> dict[str, Any]:
         """Iterate configured stock codes, isolating per-stock failures."""
         stock_codes = self._settings.stock_codes
         total_synced = 0
@@ -93,11 +117,11 @@ class SyncService:
         errors: list[str] = []
 
         with HKEXClient(self._settings) as client, PDFDownloader(self._storage, self._settings) as downloader:
-            run_date_to = hk_today()
+            run_date_to = date_to or hk_today()
             for stock_code in stock_codes:
                 try:
                     s, k, f, e = await self._sync_stock_async(
-                        client, downloader, stock_code, task_state, mode=mode, date_to=run_date_to
+                        client, downloader, stock_code, task_state, mode=mode, date_from=date_from, date_to=run_date_to
                     )
                     total_synced += s
                     total_skipped += k
@@ -130,6 +154,7 @@ class SyncService:
         stock_code: str,
         task_state: dict | None,
         mode: str = "incremental",
+        date_from: date | None = None,
         date_to: date | None = None,
     ) -> tuple[int, int, int, list[str]]:
         """
@@ -161,18 +186,20 @@ class SyncService:
         # 1. Resolve stock ID
         stock_id = client.get_stock_id(stock_code)
 
-        # 2. Determine date range based on mode
-        if mode == "full":
-            from datetime import datetime as dt
+        # 2. Determine date range. An explicit caller-supplied range (POST
+        # /api/sync with date_from/date_to) overrides the mode-derived window.
+        if date_from is None:
+            if mode == "full":
+                from datetime import datetime as dt
 
-            start_str = self._settings.HKEX_FULL_HISTORY_START
-            date_from = dt.strptime(start_str, "%Y-%m-%d").date()
-        else:
-            last_sync = await announcement_service.get_last_sync_date(self._db, stock_code)
-            if last_sync:
-                date_from = last_sync.date()
+                start_str = self._settings.HKEX_FULL_HISTORY_START
+                date_from = dt.strptime(start_str, "%Y-%m-%d").date()
             else:
-                date_from = hk_today() - timedelta(days=90)
+                last_sync = await announcement_service.get_last_sync_date(self._db, stock_code)
+                if last_sync:
+                    date_from = last_sync.date()
+                else:
+                    date_from = hk_today() - timedelta(days=90)
         # HKEX dates are Hong Kong local time, so "today" must be HK time too,
         # otherwise a UTC server lags a day behind. date_to is computed once by
         # run() so a multi-stock run straddling HK midnight stays consistent.

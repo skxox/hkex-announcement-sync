@@ -35,6 +35,8 @@ async def _run_sync_inline(
     sync_log_id: uuid.UUID,
     stock_codes: list[str] | None,
     mode: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> None:
     """
     Execute sync directly in-process, recording progress to the sync_logs table.
@@ -64,7 +66,7 @@ async def _run_sync_inline(
             # Constructed inside try so a failure (e.g. bad storage config)
             # marks the SyncLog FAILED instead of leaving it RUNNING forever.
             service = SyncService(settings)
-            result = await asyncio.to_thread(service.run, mode=mode)
+            result = await asyncio.to_thread(service.run, mode=mode, date_from=date_from, date_to=date_to)
             elapsed = (datetime.utcnow() - start).total_seconds()
 
             sync_log.status = SyncStatus.SUCCESS if not result.get("errors") else SyncStatus.FAILED
@@ -111,6 +113,9 @@ async def trigger_sync(request: SyncRequest):
     settings = get_settings()
     stock_codes_str = ",".join(request.stock_codes) if request.stock_codes else ",".join(settings.stock_codes)
 
+    if request.date_from and request.date_to and request.date_from > request.date_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to")
+
     # Prevent concurrent sync execution and reset scheduler backoff
     from app.services.scheduler import is_sync_running, reset_scheduler_interval
 
@@ -156,6 +161,8 @@ async def trigger_sync(request: SyncRequest):
                     log_id,
                     request.stock_codes,
                     request.mode.value,
+                    request.date_from,
+                    request.date_to,
                 )
             finally:
                 set_sync_running(False)
